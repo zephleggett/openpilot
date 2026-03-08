@@ -10,6 +10,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.swaglog import cloudlog
+from opendbc.car.interfaces import get_speed_dependent_torque_params
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
@@ -34,8 +35,16 @@ STEER_BUCKET_BOUNDS = [(-0.5, -0.3), (-0.3, -0.2), (-0.2, -0.1), (-0.1, 0), (0, 
 MIN_BUCKET_POINTS = np.array([100, 300, 500, 500, 500, 500, 300, 100])
 MIN_ENGAGE_BUFFER = 2  # secs
 
-VERSION = 1  # bump this to invalidate old parameter caches
+VERSION = 2  # bump this to invalidate old parameter caches
 ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
+
+# Speed-binned learning constants
+SPEED_BIN_BOUNDS = [(0, 8), (8, 14), (14, 20), (20, 26), (26, 40)]
+SPEED_BIN_CENTERS = [4.0, 11.0, 17.0, 23.0, 33.0]
+SPEED_BIN_MIN_VEL = [0, 8, 14, 20, 26]  # lower bound per bin
+MIN_POINTS_PER_SPEED_BIN = 600
+FIT_POINTS_PER_SPEED_BIN = 400
+POINTS_PER_SPEED_BUCKET = 500
 
 
 def slope2rot(slope):
@@ -84,6 +93,9 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       self.offline_latAccelFactor = CP.lateralTuning.torque.latAccelFactor
 
     self.calibrator = PoseCalibrator()
+
+    # Speed-binned learning for cars with speed-dependent torque params (config-driven)
+    self.speed_binned = CP.carFingerprint in get_speed_dependent_torque_params() and CP.lateralTuning.which() == 'torque'
 
     TorqueEstimatorExt.initialize_custom_params(self, decimated)
 
@@ -150,6 +162,22 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
                                          rowsize=3)
     self.all_torque_points = []
 
+    # Per-speed-bin buckets for speed-dependent learning
+    if getattr(self, 'speed_binned', False):
+      self.speed_bin_points = [
+        TorqueBuckets(x_bounds=STEER_BUCKET_BOUNDS,
+                      min_points=self.min_bucket_points,
+                      min_points_total=MIN_POINTS_PER_SPEED_BIN,
+                      points_per_bucket=POINTS_PER_SPEED_BUCKET,
+                      rowsize=3)
+        for _ in SPEED_BIN_BOUNDS
+      ]
+      self.speed_bin_filtered = [
+        {'latAccelFactor': FirstOrderFilter(self.offline_latAccelFactor, MIN_FILTER_DECAY, DT_MDL),
+         'frictionCoefficient': FirstOrderFilter(self.offline_friction, MIN_FILTER_DECAY, DT_MDL)}
+        for _ in SPEED_BIN_BOUNDS
+      ]
+
   def estimate_params(self):
     points = self.filtered_points.get_points(self.fit_points)
     # total least square solution as both x and y are noisy observations
@@ -163,6 +191,29 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
       cloudlog.exception(f"Error computing live torque params: {e}")
       slope = offset = friction_coeff = np.nan
     return slope, offset, friction_coeff
+
+  def estimate_params_speed_binned(self):
+    """Run independent SVD fit per speed bin."""
+    results = []
+    for i, bucket in enumerate(self.speed_bin_points):
+      if bucket.is_calculable():
+        points = bucket.get_points(FIT_POINTS_PER_SPEED_BIN)
+        try:
+          _, _, v = np.linalg.svd(points, full_matrices=False)
+          slope, offset = -v.T[0:2, 2] / v.T[2, 2]
+          _, spread = np.matmul(points[:, [0, 2]], slope2rot(slope)).T
+          friction_coeff = np.std(spread) * FRICTION_FACTOR
+          if not any(np.isnan(val) for val in [slope, friction_coeff]):
+            laf = np.clip(slope, self.min_lataccel_factor, self.max_lataccel_factor)
+            fric = np.clip(friction_coeff, self.min_friction, self.max_friction)
+            self.speed_bin_filtered[i]['latAccelFactor'].update(laf)
+            self.speed_bin_filtered[i]['frictionCoefficient'].update(fric)
+            results.append((i, True))
+            continue
+        except np.linalg.LinAlgError:
+          pass
+      results.append((i, False))
+    return results
 
   def update_params(self, params):
     self.decay = min(self.decay + DT_MDL, MAX_FILTER_DECAY)
@@ -203,9 +254,18 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
         vego = np.interp(t, self.raw_points['carState_t'], self.raw_points['vego'])
         steer = np.interp(t, self.raw_points['carOutput_t'], self.raw_points['steer_torque']).item()
         lateral_acc = (vego * yaw_rate) - (np.sin(roll) * ACCELERATION_DUE_TO_GRAVITY).item()
-        if all(lat_active) and not any(steer_override) and (vego > MIN_VEL) and (abs(steer) > STEER_MIN_THRESHOLD):
+        if all(lat_active) and not any(steer_override) and (abs(steer) > STEER_MIN_THRESHOLD):
           if abs(lateral_acc) <= LAT_ACC_THRESHOLD:
-            self.filtered_points.add_point(steer, lateral_acc)
+            # Global buckets still require MIN_VEL for backward compat
+            if vego > MIN_VEL:
+              self.filtered_points.add_point(steer, lateral_acc)
+
+            # Route to speed bins for speed-binned cars
+            if self.speed_binned:
+              for i, (lo, hi) in enumerate(SPEED_BIN_BOUNDS):
+                if lo <= vego < hi:
+                  self.speed_bin_points[i].add_point(steer, lateral_acc)
+                  break
 
           if self.track_all_points:
             self.all_torque_points.append([steer, lateral_acc])
@@ -245,6 +305,16 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
     liveTorqueParameters.calPerc = self.filtered_points.get_valid_percent()
     liveTorqueParameters.decay = self.decay
     liveTorqueParameters.maxResets = self.resets
+
+    # Speed-binned output
+    if self.speed_binned:
+      bin_results = self.estimate_params_speed_binned()
+      liveTorqueParameters.speedBinCenters = SPEED_BIN_CENTERS
+      liveTorqueParameters.speedBinLatAccelFactors = [float(self.speed_bin_filtered[i]['latAccelFactor'].x) for i in range(len(SPEED_BIN_BOUNDS))]
+      liveTorqueParameters.speedBinFrictions = [float(self.speed_bin_filtered[i]['frictionCoefficient'].x) for i in range(len(SPEED_BIN_BOUNDS))]
+      liveTorqueParameters.speedBinValid = [valid for _, valid in bin_results]
+      liveTorqueParameters.speedBinCalPerc = [float(self.speed_bin_points[i].get_valid_percent()) for i in range(len(SPEED_BIN_BOUNDS))]
+
     return msg
 
 

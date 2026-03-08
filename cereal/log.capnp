@@ -2298,6 +2298,13 @@ struct LiveTorqueParametersData {
   version @11 :Int32;
   useParams @12 :Bool;
   calPerc @13 :Int8;
+
+  # Speed-dependent parameters
+  speedBinCenters @14 :List(Float32);
+  speedBinLatAccelFactors @15 :List(Float32);
+  speedBinFrictions @16 :List(Float32);
+  speedBinValid @17 :List(Bool);
+  speedBinCalPerc @18 :List(Float32);
 }
 
 struct LiveDelayData {

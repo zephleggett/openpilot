@@ -37,6 +37,7 @@ VERSION = 1
 class LatControlTorque(LatControl):
   def __init__(self, CP, CP_SP, CI, dt):
     super().__init__(CP, CP_SP, CI, dt)
+    self.CI = CI
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
@@ -56,11 +57,23 @@ class LatControlTorque(LatControl):
     self.torque_params.friction = friction
     self.update_limits()
 
+  def update_live_torque_params_speed_dep(self, speed_bp, laf_bp, friction_bp, valid_bp, offset):
+    if hasattr(self.CI, 'update_speed_dep_laf'):
+      self.CI.update_speed_dep_laf(speed_bp, laf_bp, friction_bp, valid_bp)
+    # Use representative LAF for PID limits (most common driving speed)
+    self.torque_params.latAccelFactor = float(np.interp(20.0, speed_bp, laf_bp))
+    self.torque_params.latAccelOffset = offset
+    self.update_limits()
+
   def update_limits(self):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, calibrated_pose, curvature_limited, lat_delay):
+    # Update CI's speed for speed-dependent closure callbacks
+    if hasattr(self.CI, 'v_ego'):
+      self.CI.v_ego = CS.vEgo
+
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
