@@ -73,7 +73,6 @@ class LatControlTorque(LatControl):
     # Update CI's speed for speed-dependent closure callbacks
     if hasattr(self.CI, 'v_ego'):
       self.CI.v_ego = CS.vEgo
-      self.update_limits()  # PID limits track current speed's LAF
 
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):

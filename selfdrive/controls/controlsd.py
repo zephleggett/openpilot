@@ -95,6 +95,9 @@ class Controls(ControlsExt):
 
         # Speed-dependent updates
         if len(torque_params.speedBinCenters) > 0:
+          # Ensure CI.v_ego is current before speed-dep closures evaluate update_limits()
+          if hasattr(self.LaC, 'CI') and hasattr(self.LaC.CI, 'v_ego'):
+            self.LaC.CI.v_ego = CS.vEgo
           self.LaC.update_live_torque_params_speed_dep(
             list(torque_params.speedBinCenters),
             list(torque_params.speedBinLatAccelFactors),

@@ -36,7 +36,7 @@ MIN_BUCKET_POINTS = np.array([100, 300, 500, 500, 500, 500, 300, 100])
 MIN_ENGAGE_BUFFER = 2  # secs
 
 VERSION = 2  # bump this to invalidate old parameter caches
-ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen']
+ALLOWED_CARS = ['toyota', 'hyundai', 'rivian', 'honda', 'volkswagen', 'mazda']
 
 # Speed-binned learning constants (skip <3 m/s where lat_accel = v*yaw_rate is noisy)
 SPEED_BIN_BOUNDS = [(3, 8), (8, 14), (14, 20), (20, 26), (26, 40)]
@@ -172,10 +172,16 @@ class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
                       rowsize=3)
         for _ in SPEED_BIN_BOUNDS
       ]
+      # Initialize per-bin filters with per-speed LAF/friction from speed_dependent.toml
+      speed_dep_cfg = get_speed_dependent_torque_params().get(self.CP.carFingerprint, {})
+      speed_dep_laf = speed_dep_cfg.get('laf_bp', [self.offline_latAccelFactor] * len(SPEED_BIN_BOUNDS))
+      speed_dep_friction = speed_dep_cfg.get('friction_bp', [self.offline_friction] * len(SPEED_BIN_BOUNDS))
       self.speed_bin_filtered = [
-        {'latAccelFactor': FirstOrderFilter(self.offline_latAccelFactor, MIN_FILTER_DECAY, DT_MDL),
-         'frictionCoefficient': FirstOrderFilter(self.offline_friction, MIN_FILTER_DECAY, DT_MDL)}
-        for _ in SPEED_BIN_BOUNDS
+        {'latAccelFactor': FirstOrderFilter(speed_dep_laf[i] if i < len(speed_dep_laf) else self.offline_latAccelFactor,
+                                            MIN_FILTER_DECAY, DT_MDL),
+         'frictionCoefficient': FirstOrderFilter(speed_dep_friction[i] if i < len(speed_dep_friction) else self.offline_friction,
+                                                 MIN_FILTER_DECAY, DT_MDL)}
+        for i in range(len(SPEED_BIN_BOUNDS))
       ]
 
   def estimate_params(self):
