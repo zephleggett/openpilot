@@ -161,10 +161,12 @@ def capture_picker(option, filename):
   from openpilot.system.ui.widgets.scroller import NavScroller
 
   picker = option.create_picker_screen()
+  # NavScroller doesn't pass kwargs to _Scroller (NavWidget rejects them)
   view = NavScroller()
-  view.add_widgets([picker])
-  view._scroller.set_scrolling_enabled(False)
   view._scroller._show_scroll_indicator = False
+  view._scroller._pad = 0
+  view._scroller.add_widgets([picker])
+  view._scroller.set_scrolling_enabled(False)
   view.show_event()
   capture(view, filename)
 
