@@ -111,9 +111,16 @@ class SmartCruiseControlVision:
 
       # Distance to the peak predicted lateral accel: integrate model velocity
       # up to the index of the peak. Used by distance-aware consumers.
+      # NOTE: peak_idx == 0 means the peak is at the very next sample (~50 ms
+      # ahead). Use the first vel_plan sample as the distance (~v * DT_MDL)
+      # rather than forcing 0, otherwise downstream consumers cannot tell
+      # "imminent peak" apart from "no peak" and conservatively bypass the
+      # distance-aware logic exactly when it is most needed.
       if len(predicted_lat_accels) > 0 and self.max_pred_lat_acc > 0:
         peak_idx = int(np.argmax(predicted_lat_accels))
-        self.d_to_peak = float(np.sum(vel_plan[:peak_idx + 1]) * DT_MDL) if peak_idx > 0 else 0.
+        # Include sample 0 always (so peak_idx=0 still yields a positive d).
+        d = float(np.sum(vel_plan[:max(peak_idx, 0) + 1]) * DT_MDL)
+        self.d_to_peak = d if np.isfinite(d) and d > 0 else 0.
       else:
         self.d_to_peak = 0.
 

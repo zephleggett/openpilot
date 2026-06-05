@@ -4,6 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import math
+
 from cereal import car, custom
 from opendbc.car import structs, apply_hysteresis
 from openpilot.common.constants import CV
@@ -80,8 +82,9 @@ class IntelligentCruiseButtonManagement:
     if self.CP.brand != 'mazda' or self.CP.carFingerprint not in MAZDA_SMARTCRUISE_FINGERPRINTS:
       return v_target_ms
 
-    # Reject negative/zero or sentinel v_ego (uninitialized carState).
-    if not (0.0 < CS.vEgo < MAZDA_SOLVER_MAX_V_MS):
+    # Reject negative/zero/NaN/sentinel v_ego (uninitialized carState).
+    v_ego = CS.vEgo
+    if not (0.0 < v_ego < MAZDA_SOLVER_MAX_V_MS):
       return v_target_ms
 
     source = LP_SP.longitudinalPlanSource
@@ -98,19 +101,31 @@ class IntelligentCruiseButtonManagement:
 
     # Bound both inputs explicitly. v_curve must be positive AND below the
     # sentinel ceiling (V_CRUISE_UNSET in m/s is ~70). d must be positive and
-    # finite. Refuse the solver call if any of these fail; the existing
-    # vTarget passes through unchanged.
-    if not (0.0 < v_curve_ms < MAZDA_SOLVER_MAX_V_MS):
+    # finite. NaN comparisons evaluate False so non-finite values are also
+    # rejected here. Critical: v_curve must be below v_ego or the solver would
+    # be asked to "decelerate" to a higher target -- skip and let raw vTarget
+    # path handle that (e.g. cruise speed is below the curve speed -> no-op).
+    if not (0.0 < v_curve_ms < v_ego):
       return v_target_ms
     if not (0.0 < d_m < 1000.0):
       return v_target_ms
 
-    result = mazda_mrcc_inverse_solve(CS.vEgo * CV.MS_TO_MPH,
+    # Pass current a_ego so forward_simulate uses the actual decel/accel state
+    # rather than assuming the vehicle is at steady cruise.
+    a_ego_initial = CS.aEgo if math.isfinite(CS.aEgo) else 0.0
+
+    result = mazda_mrcc_inverse_solve(v_ego * CV.MS_TO_MPH,
                                        v_curve_ms * CV.MS_TO_MPH,
-                                       d_m)
-    sp_mph = result.get('sp_command_mph', 0.0)
-    # Defensive: clamp the solver output to [v_curve, v_now] just in case.
-    sp_mph_max = CS.vEgo * CV.MS_TO_MPH
+                                       d_m,
+                                       a_ego_initial=a_ego_initial)
+    sp_mph = result.get('sp_command_mph')
+    # If the solver returned a malformed dict or NaN, refuse to override
+    # vTarget rather than ship a garbage command.
+    if sp_mph is None or not math.isfinite(sp_mph):
+      return v_target_ms
+    # Clamp to [v_curve, v_ego] in mph. Guarded by the v_curve < v_ego check
+    # above so sp_mph_min <= sp_mph_max always holds.
+    sp_mph_max = v_ego * CV.MS_TO_MPH
     sp_mph_min = v_curve_ms * CV.MS_TO_MPH
     sp_mph = max(min(sp_mph, sp_mph_max), sp_mph_min)
     return sp_mph * CV.MPH_TO_MS
