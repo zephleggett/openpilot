@@ -102,6 +102,8 @@ class LongitudinalPlannerSP:
     sccVision.state = self.scc.vision.state
     sccVision.vTarget = float(self.scc.vision.output_v_target)
     sccVision.aTarget = float(self.scc.vision.output_a_target)
+    sccVision.vTargetCurve = float(self.scc.vision.output_v_target_curve)
+    sccVision.dTarget = float(self.scc.vision.output_d_to_target)
     sccVision.currentLateralAccel = float(self.scc.vision.current_lat_acc)
     sccVision.maxPredictedLateralAccel = float(self.scc.vision.max_pred_lat_acc)
     sccVision.enabled = self.scc.vision.is_enabled
@@ -111,6 +113,7 @@ class LongitudinalPlannerSP:
     sccMap.state = self.scc.map.state
     sccMap.vTarget = float(self.scc.map.output_v_target)
     sccMap.aTarget = float(self.scc.map.output_a_target)
+    sccMap.dTarget = float(self.scc.map.output_d_to_target)
     sccMap.enabled = self.scc.map.is_enabled
     sccMap.active = self.scc.map.is_active
 
