@@ -218,6 +218,11 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       maxPredictedLateralAccel @4 :Float32;
       enabled @5 :Bool;
       active @6 :Bool;
+      # True curve speed (no a_target × time projection). Used by Mazda ICBM's
+      # inverse solver alongside dTarget for distance-aware sp_command selection.
+      vTargetCurve @7 :Float32;
+      # Distance (meters) from vehicle to the predicted peak lateral accel.
+      dTarget @8 :Float32;
     }
 
     struct Map {
@@ -226,6 +231,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       aTarget @2 :Float32;
       enabled @3 :Bool;
       active @4 :Bool;
+      # Distance (meters) to the constraining waypoint that produced vTarget.
+      dTarget @5 :Float32;
     }
 
     enum VisionState {
