@@ -49,11 +49,40 @@ class IntelligentCruiseButtonManagement:
   def v_cruise_equal(self) -> bool:
     return self.v_target == self.v_cruise_cluster
 
+  def _maybe_apply_mazda_inverse_solver(self, CS: car.CarState, LP_SP: custom.LongitudinalPlanSP, v_target_ms: float) -> float:
+    """Mazda-only: when the long plan source is Vision/Map and a distance is
+    published, replace v_target with the MRCC inverse solver's sp_command so
+    ICBM commands a distance-aware overshoot instead of chasing the raw vTarget.
+
+    Falls back to the original v_target_ms in all other cases.
+    """
+    if self.CP.brand != 'mazda':
+      return v_target_ms
+
+    source = LP_SP.longitudinalPlanSource
+    if source == LongitudinalPlanSource.sccVision:
+      d = LP_SP.smartCruiseControl.vision.dTarget
+      v_curve = LP_SP.smartCruiseControl.vision.vTargetCurve
+      if d > 0 and v_curve > 0:
+        from opendbc.sunnypilot.car.mazda.mrcc_inverse import inverse_solve
+        result = inverse_solve(CS.vEgo * CV.MS_TO_MPH, v_curve * CV.MS_TO_MPH, d)
+        return result['sp_command_mph'] * CV.MPH_TO_MS
+    elif source == LongitudinalPlanSource.sccMap:
+      d = LP_SP.smartCruiseControl.map.dTarget
+      v_map = LP_SP.smartCruiseControl.map.vTarget
+      if d > 0 and v_map > 0:
+        from opendbc.sunnypilot.car.mazda.mrcc_inverse import inverse_solve
+        result = inverse_solve(CS.vEgo * CV.MS_TO_MPH, v_map * CV.MS_TO_MPH, d)
+        return result['sp_command_mph'] * CV.MPH_TO_MS
+
+    return v_target_ms
+
   def update_calculations(self, CS: car.CarState, LP_SP: custom.LongitudinalPlanSP) -> None:
     speed_conv = CV.MS_TO_KPH if self.is_metric else CV.MS_TO_MPH
     ms_conv = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
 
-    self.v_target_ms_last = apply_hysteresis(LP_SP.vTarget, self.v_target_ms_last, HYST_GAP * ms_conv)
+    v_target_ms = self._maybe_apply_mazda_inverse_solver(CS, LP_SP, LP_SP.vTarget)
+    self.v_target_ms_last = apply_hysteresis(v_target_ms, self.v_target_ms_last, HYST_GAP * ms_conv)
 
     self.v_target = round(self.v_target_ms_last * speed_conv)
     self.v_cruise_min = get_minimum_set_speed(self.is_metric)
