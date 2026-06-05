@@ -51,6 +51,10 @@ class SmartCruiseControlVision:
   a_ego: float = 0.
   output_v_target: float = V_CRUISE_UNSET
   output_a_target: float = 0.
+  # True curve speed (no a_target × time projection) and distance to that
+  # curve, for distance-aware consumers (Mazda ICBM inverse solver).
+  output_v_target_curve: float = V_CRUISE_UNSET
+  output_d_to_target: float = 0.
 
   def __init__(self):
     self.params = Params()
@@ -65,6 +69,7 @@ class SmartCruiseControlVision:
     self.state = VisionState.disabled
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
+    self.d_to_peak = 0.
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -74,6 +79,18 @@ class SmartCruiseControlVision:
       return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
 
     return V_CRUISE_UNSET
+
+  def get_v_target_curve_from_control(self) -> float:
+    """True curve speed without the +a_target*4s projection. Used by
+    distance-aware consumers; non-Mazda paths continue to read output_v_target."""
+    if self.is_active:
+      return max(self.v_target, MIN_V)
+    return V_CRUISE_UNSET
+
+  def get_d_to_target_from_control(self) -> float:
+    """Distance (m) from current position to the predicted peak lateral accel.
+    Zero when not active."""
+    return self.d_to_peak if self.is_active else 0.
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
@@ -91,6 +108,14 @@ class SmartCruiseControlVision:
       # get the maximum lat accel from the model
       predicted_lat_accels = rate_plan * vel_plan
       self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
+
+      # Distance to the peak predicted lateral accel: integrate model velocity
+      # up to the index of the peak. Used by distance-aware consumers.
+      if len(predicted_lat_accels) > 0 and self.max_pred_lat_acc > 0:
+        peak_idx = int(np.argmax(predicted_lat_accels))
+        self.d_to_peak = float(np.sum(vel_plan[:peak_idx + 1]) * DT_MDL) if peak_idx > 0 else 0.
+      else:
+        self.d_to_peak = 0.
 
       # get the maximum curve based on the current velocity
       v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
@@ -199,5 +224,7 @@ class SmartCruiseControlVision:
 
     self.output_v_target = self.get_v_target_from_control()
     self.output_a_target = self.get_a_target_from_control()
+    self.output_v_target_curve = self.get_v_target_curve_from_control()
+    self.output_d_to_target = self.get_d_to_target_from_control()
 
     self.frame += 1
