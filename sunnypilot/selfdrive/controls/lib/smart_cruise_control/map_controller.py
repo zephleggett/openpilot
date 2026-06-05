@@ -69,6 +69,9 @@ class SmartCruiseControlMap:
   a_ego: float = 0.
   output_v_target: float = V_CRUISE_UNSET
   output_a_target: float = 0.
+  # Distance (meters) to the waypoint that produced v_target. Used by
+  # distance-aware consumers (Mazda ICBM inverse solver).
+  output_d_to_target: float = 0.
 
   def __init__(self):
     self.params = Params()
@@ -82,6 +85,7 @@ class SmartCruiseControlMap:
     self.v_cruise = 0
     self.target_lat = 0.0
     self.target_lon = 0.0
+    self.target_distance = 0.0
     self.frame = -1
 
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
@@ -95,6 +99,9 @@ class SmartCruiseControlMap:
 
   def get_a_target_from_control(self) -> float:
     return self.a_ego
+
+  def get_d_to_target_from_control(self) -> float:
+    return self.target_distance if self.is_active else 0.
 
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
@@ -151,8 +158,12 @@ class SmartCruiseControlMap:
         a = 0.5 * TARGET_JERK
         b = self.a_ego
         c = self.v_ego - tv
-        t_a = -1 * ((b**2 - 4 * a * c) ** 0.5 + b) / 2 * a
-        t_b = ((b**2 - 4 * a * c) ** 0.5 - b) / 2 * a
+        # NOTE: denominators must be parenthesized — `/ 2 * a` parses as
+        # `(.../2) * a` due to Python's left-associative * and / precedence.
+        # Pre-fix the moderate-curve branch's max_d came out a^2 too small
+        # (~11x) so this branch effectively never tripped. See sunnypilot/sunnypilot#1816.
+        t_a = -1 * ((b**2 - 4 * a * c) ** 0.5 + b) / (2 * a)
+        t_b = ((b**2 - 4 * a * c) ** 0.5 - b) / (2 * a)
         if not isinstance(t_a, complex) and t_a > 0:
           t = t_a
         else:
@@ -170,17 +181,21 @@ class SmartCruiseControlMap:
         max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
 
       if d < max_d + tv * TARGET_OFFSET:
-        valid_velocities.append((float(tv), tlat, tlon))
+        # Track the actual waypoint distance alongside the target speed so
+        # distance-aware consumers (Mazda ICBM solver) can reason about it.
+        valid_velocities.append((float(tv), tlat, tlon, float(d)))
 
     # Find the smallest velocity we need to adjust for
     min_v = 100.0
     target_lat = 0.0
     target_lon = 0.0
-    for tv, lat, lon in valid_velocities:
+    target_distance = 0.0
+    for tv, lat, lon, waypoint_d in valid_velocities:
       if tv < min_v:
         min_v = tv
         target_lat = lat
         target_lon = lon
+        target_distance = waypoint_d
 
     if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
       for i in range(len(forward_points)):
@@ -198,10 +213,12 @@ class SmartCruiseControlMap:
       self.v_target = 0.0
       self.target_lat = 0.0
       self.target_lon = 0.0
+      self.target_distance = 0.0
 
     self.v_target = min_v
     self.target_lat = target_lat
     self.target_lon = target_lon
+    self.target_distance = target_distance
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, TURNING
@@ -257,5 +274,6 @@ class SmartCruiseControlMap:
 
     self.output_v_target = self.get_v_target_from_control()
     self.output_a_target = self.get_a_target_from_control()
+    self.output_d_to_target = self.get_d_to_target_from_control()
 
     self.frame += 1
