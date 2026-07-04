@@ -1,11 +1,9 @@
 from cereal import log
 
 
-# Process-lifetime latch: once CAN ignition has been seen on any panda, we stop
-# trusting ignitionLine. On Mazda, ignitionLine stays high for ~30s after the
-# ignition is turned off (a false positive); ignitionCan goes false promptly, so
-# it is the authoritative signal. ignitionCan can also drop out briefly on CAN
-# gaps, so we latch rather than reverting to ignitionLine once CAN has spoken.
+# Process-lifetime latch: once CAN ignition has been seen on any panda, we stop trusting
+# ignitionLine. On Mazda, ignitionLine stays high for ~30s after the ignition is
+# turned off; ignitionCan goes false promptly, so it is the authoritative signal.
 ignition_can_seen = False
 
 
