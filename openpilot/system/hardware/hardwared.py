@@ -14,7 +14,7 @@ from openpilot.cereal import log
 from openpilot.cereal.services import SERVICE_LIST
 from openpilot.common.utils import strip_deprecated_keys
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
+from openpilot.common.params import Params, ParamKeyFlag
 from openpilot.common.realtime import DT_HW
 from openpilot.selfdrive.modeld.helpers import MODELS_DIR, chestnut_compiled
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
@@ -250,6 +250,9 @@ def hardware_thread(end_event, hw_queue) -> None:
     # handle requests to cycle system started state
     if params.get_bool("OnroadCycleRequested"):
       params.put_bool("OnroadCycleRequested", False, block=True)
+      # clear before pandad can re-read the previous session's CarParams and apply its
+      # safety mode, which would open the relay seconds before controls come up
+      params.clear_all(ParamKeyFlag.CLEAR_ON_ONROAD_TRANSITION)
       offroad_cycle_count = sm.frame
     onroad_conditions["not_onroad_cycle"] = (sm.frame - offroad_cycle_count) >= ONROAD_CYCLE_TIME * SERVICE_LIST['pandaStates'].frequency
 
